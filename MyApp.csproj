@@ -4,12 +4,12 @@
     <TargetFramework>net48</TargetFramework>
     <Platforms>x64</Platforms>
     <PlatformTarget>x64</PlatformTarget>
-    <AssemblyName>MyApp</AssemblyName>
-    <RootNamespace>MyApp</RootNamespace>
+    <AssemblyName>NetClient</AssemblyName>
+    <RootNamespace>NetClient</RootNamespace>
     <LangVersion>latest</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Optimize>true</Optimize>
     <DebugType>none</DebugType>
-    <Deterministic>true</Deterministic>
+    <Deterministic>false</Deterministic>
   </PropertyGroup>
 </Project>
