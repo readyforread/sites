@@ -17,6 +17,7 @@ using System.Runtime.InteropServices.ComTypes;
 using System.Security.Principal;
 using System.Text;
 using System.Threading;
+using Microsoft.Win32.SafeHandles;
 
 namespace MyApp
 {
@@ -1109,7 +1110,12 @@ namespace MyApp
                 if (h != IntPtr.Zero && h != new IntPtr(-1))
                 {
                     byte[] b = new byte[1] { 0xAA };
-                    using (var fs = new FileStream(h, FileAccess.Write)) { fs.Write(b, 0, 1); }
+                    using (var sfh = new SafeFileHandle(h, false))
+                    using (var fs = new FileStream(sfh, FileAccess.Write))
+                    {
+                        fs.Write(b, 0, 1);
+                        fs.Flush();
+                    }
                     N.CloseHandle(h);
                 }
             }
@@ -1168,8 +1174,8 @@ namespace MyApp
             using (var ms = new MemoryStream(data))
             {
                 IntPtr ppv;
-                return N.CoUnmarshalInterface(new IStreamImpl(ms),
-                    ref IID_IUnknown, out ppv);
+                Guid iid = IID_IUnknown;  // локальная копия — ref на readonly нельзя
+                return N.CoUnmarshalInterface(new IStreamImpl(ms), ref iid, out ppv);
             }
         }
     }
