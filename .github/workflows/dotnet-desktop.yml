@@ -2,7 +2,9 @@ name: build
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
@@ -10,19 +12,27 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-dotnet@v4
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
 
-      - name: Build (x64, Release)
-        run: dotnet build -c Release -p:Platform=x64
+      - name: Restore
+        run: dotnet restore MyApp.csproj
+
+      - name: Build (Release, x64)
+        run: dotnet build MyApp.csproj -c Release -p:Platform=x64 --no-restore
+
+      - name: Show output
+        run: Get-ChildItem -Recurse bin\ -Filter *.exe | Select-Object FullName, Length
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: DcomPotato-x64
-          path: bin/x64/Release/net48/DcomPotato.exe
+          name: MyApp-x64
+          path: bin/x64/Release/net48/MyApp.exe
           if-no-files-found: error
           retention-days: 30
