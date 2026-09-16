@@ -3,8 +3,6 @@ name: build
 on:
   push:
     branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
@@ -21,18 +19,37 @@ jobs:
           dotnet-version: '8.0.x'
 
       - name: Restore
-        run: dotnet restore MyApp.csproj
+        run: dotnet restore NetClient.csproj
 
       - name: Build (Release, x64)
-        run: dotnet build MyApp.csproj -c Release -p:Platform=x64 --no-restore
+        run: dotnet build NetClient.csproj -c Release -p:Platform=x64 --no-restore
 
-      - name: Show output
-        run: Get-ChildItem -Recurse bin\ -Filter *.exe | Select-Object FullName, Length
+      - name: Locate output
+        id: find
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Recurse bin\ -Filter *.exe |
+                 Where-Object { $_.FullName -notmatch '\\ref\\' } |
+                 Select-Object -First 1
+          if (-not $exe) { Write-Error "exe not found"; exit 1 }
+          Write-Host "Found: $($exe.FullName)"
+          "path=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "name=$($exe.Name)"     | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Compute SHA256
+        shell: pwsh
+        run: |
+          $h = Get-FileHash "${{ steps.find.outputs.path }}" -Algorithm SHA256
+          Write-Host "SHA256: $($h.Hash)"
+          "$($h.Hash)  ${{ steps.find.outputs.name }}" |
+              Out-File -FilePath SHA256.txt -Encoding ascii
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MyApp-x64
-          path: bin/x64/Release/net48/MyApp.exe
+          name: NetClient-x64
+          path: |
+            ${{ steps.find.outputs.path }}
+            SHA256.txt
           if-no-files-found: error
           retention-days: 30
